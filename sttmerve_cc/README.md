@@ -29,13 +29,13 @@ A robust bridge application designed to synchronize real-time data from remote c
 4. **Data Transmission**: A client sends a `POST` request with a JSON payload:
    ```json
    {
-     "sheetName": "SensorData",
+    
      "category": "Temperature",
      "type": "Sensor_A",
      "value": "24.5"
    }
    ```
-5. **Automation**: The app receives the data, opens the `"SensorData"` sheet, finds the column where the **Category** is `"Temperature"` and the **Type** is `"Sensor_A"`, and writes `"24.5"` to the next available row.
+5. **Automation**: The app receives the data, finds the column where the **Category** is `"Temperature"` and the **Type** is `"Sensor_A"`, and writes `"24.5"` to the next available row.
 
 ## 📂 Project Structure
 - `Services/`: Core logic (Excel, HTTP Server, Config, Settings).
