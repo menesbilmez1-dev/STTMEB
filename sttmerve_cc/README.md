@@ -6,7 +6,7 @@ A robust bridge application designed to synchronize real-time data from remote c
 **STTPROJECT** acts as a high-speed HTTP listener that waits for command payloads from any compatible client. Once a command is received, the application identifies the specific Excel sheet targeted, finds the intersection of the **Category** (Main Header) and the **Type** (Subheader), and injects the data into the next available row.
 
 ## ✨ Key Features
-- **Real-time HTTP Listener**: Runs a lightweight local server (default port 8080) to receive JSON payloads.
+- **Real-time HTTP Listener**: Runs a lightweight server on the selected LAN address (default port 8080) to receive JSON payloads, without requiring an administrator-only HTTP URL reservation.
 - **Automated Excel Management**: 
     - Targeted sheet selection.
     - Intelligent Header Mapping: Uses **Category** as the Main Header and **Type** as the Subheader to locate columns.
@@ -26,16 +26,29 @@ A robust bridge application designed to synchronize real-time data from remote c
 1. **Configuration**: Define your Excel structure and command categories in the config file.
 2. **Startup**: Launch the desktop application and select your target Excel file.
 3. **Server Activation**: Start the HTTP server within the app.
-4. **Data Transmission**: A client sends a `POST` request with a JSON payload:
+4. **Data Transmission**: A client sends one `POST /command` request per record.
+   The request body is a JSON array; every command in that array is written to
+   the same next available row:
    ```json
-   {
-    
-     "category": "Temperature",
-     "type": "Sensor_A",
-     "value": "24.5"
-   }
+   [
+     {
+       "category": "",
+       "type": "SATIŞ",
+       "value": "Muhiddin dede",
+       "batchId": "a-stable-client-generated-id"
+     },
+     {
+       "category": "YAĞ SATIŞI",
+       "type": "HAVALE",
+       "value": "500",
+       "batchId": "a-stable-client-generated-id"
+     }
+   ]
    ```
-5. **Automation**: The app receives the data, finds the column where the **Category** is `"Temperature"` and the **Type** is `"Sensor_A"`, and writes `"24.5"` to the next available row.
+5. **Automation**: The app validates each category/type against the selected
+   worksheet, writes the batch to one row, and returns success only after the
+   workbook has been saved. Repeated requests with the same `batchId` are not
+   written twice.
 
 ## 📂 Project Structure
 - `Services/`: Core logic (Excel, HTTP Server, Config, Settings).

@@ -13,6 +13,6 @@ namespace sttmerve_cc.Models
         public List<CategoryConfig> Categories { get; set; } = new List<CategoryConfig>();
       
         public string ExcelFilePath { get; set; } = string.Empty;
+        public string SheetName { get; set; } = string.Empty;
     }
 }
-

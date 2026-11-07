@@ -37,6 +37,10 @@
 
             <Button Content="Yükle" Command="{Binding LoadExcelFromCurrentPathCommand}" Margin="10,15,10,5" Padding="10,5" Width="60" Background="#2ECC71" Foreground="White"/>
             <Button Content="Excel'e Kaydet" Command="{Binding SaveToExcelCommand}" Margin="5,15,10,5" Padding="10,5" Width="100" Background="#3498DB" Foreground="White"/>
+            <Button Content="Yapılandırmayı Excel'den Kaydet" Command="{Binding SaveConfigFromExcelCommand}" Margin="5,15,10,5" Padding="10,5" Width="180" Background="#E67E22" Foreground="White"/>
+            <Button Content="Şemayı Excel ile Senkronize Et" Command="{Binding SyncWithExcelCommand}" Margin="5,15,10,5" Padding="10,5" Width="200" Background="#9B59B6" Foreground="White"/>
+
+
 
             <Separator Width="2" Margin="10,0" Background="#DDD"/>
 

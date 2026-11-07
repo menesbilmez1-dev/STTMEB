@@ -5,6 +5,7 @@ using System.Data;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using ClosedXML.Excel;
 
 namespace sttmerve_cc.Services
 {
@@ -12,7 +13,7 @@ namespace sttmerve_cc.Services
     {
         private AppConfig _config;
         private readonly string _configFilePath;
-       
+
         public AppConfig Config => _config;
         public string ExcelFilePath => _config.ExcelFilePath;
 
@@ -60,12 +61,82 @@ namespace sttmerve_cc.Services
         }
 
         /// <summary>
-        /// Legacy method to sync configuration from a dedicated "Config" sheet.
+        /// Synchronizes the application configuration schema (Categories and Types)
+        /// directly from the Excel file's header structure.
         /// </summary>
-        public void SyncWithExcel(string filePath)
+        /// <param name="filePath">Path to the Excel file.</param>
+        /// <param name="sheetName">Name of the worksheet.</param>
+        public void SyncWithExcel(string filePath, string sheetName)
         {
-            // This method is being deprecated in favor of SyncWithDataTable
-            // implementation is kept for backward compatibility if needed.
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+                throw new FileNotFoundException("Excel dosyası bulunamadı.");
+
+            using var workbook = new XLWorkbook(filePath);
+            var worksheet = workbook.Worksheet(sheetName);
+
+            var newConfig = new AppConfig
+            {
+                ExcelFilePath = filePath,
+                SheetName = sheetName
+            };
+
+            int lastColumn = 0;
+            var lastColRange = worksheet.LastColumnUsed();
+            if (lastColRange != null) lastColumn = lastColRange.ColumnNumber();
+
+            for (int col = 1; col <= lastColumn; col++)
+            {
+                var cell1 = worksheet.Cell(1, col);
+                string category = string.Empty;
+
+                var range = worksheet.MergedRanges.FirstOrDefault(r => r.Contains(cell1));
+                if (range != null)
+                {
+                    category = range.FirstCell().Value.ToString()?.Trim() ?? string.Empty;
+                }
+                else
+                {
+                    category = cell1.Value.ToString()?.Trim() ?? string.Empty;
+                }
+
+                string type = worksheet.Cell(2, col).Value.ToString()?.Trim() ?? string.Empty;
+
+                if (!string.IsNullOrEmpty(type) && !string.IsNullOrEmpty(category))
+                {
+                    var existingCategory = newConfig.Categories.FirstOrDefault(c => c.Name == category);
+                    if (existingCategory == null)
+                    {
+                        existingCategory = new CategoryConfig { Name = category, Types = new List<string>() };
+                        newConfig.Categories.Add(existingCategory);
+                    }
+
+                    if (!existingCategory.Types.Contains(type))
+                    {
+                        existingCategory.Types.Add(type);
+                    }
+                }
+                //It should be like this instead of && but i decided to keep both for now.
+                else if (!string.IsNullOrEmpty(category) || !string.IsNullOrEmpty(type))
+                {
+                    var existingCategory = newConfig.Categories.FirstOrDefault(c => c.Name == category);
+                    if (existingCategory == null)
+                    {
+                        existingCategory = new CategoryConfig { Name = category, Types = new List<string>() };
+                        newConfig.Categories.Add(existingCategory);
+                    }
+
+                    if (!existingCategory.Types.Contains(type))
+                    {
+                        existingCategory.Types.Add(type);
+                    }
+
+                }
+            }
+
+            if (newConfig.Categories.Count > 0)
+            {
+                _config = newConfig;
+            }
         }
 
         /// <summary>
@@ -127,7 +198,7 @@ namespace sttmerve_cc.Services
             if (newConfig.Categories.Count > 0)
             {
                 _config = newConfig;
-              
+
             }
         }
     }

@@ -26,6 +26,8 @@ namespace sttmerve_cc.ViewModels
         public ICommand SaveToExcelCommand { get; }
         public ICommand LoadExcelCommand { get; }
         public ICommand LoadExcelFromCurrentPathCommand { get; }
+        public ICommand SaveConfigFromExcelCommand { get; }
+        public ICommand SyncWithExcelCommand { get; }
         public ICommand StartServerCommand { get; }
         public ICommand StopServerCommand { get; }
 
@@ -59,7 +61,7 @@ namespace sttmerve_cc.ViewModels
         }
         private string _serverUrl = string.Empty;
 
-       
+
         public string ServerUrl
         {
             get => _serverUrl;
@@ -79,12 +81,17 @@ namespace sttmerve_cc.ViewModels
             set => SetProperty(ref _sheetDataTable, value);
         }
 
-        public MainViewModel(ExcelService excelService, HttpServerService httpServerService,CommandRepository commandRepository)
+        public MainViewModel(
+            ExcelService excelService,
+            HttpServerService httpServerService,
+            CommandRepository commandRepository,
+            ConfigService configService)
         {
-            _repository= commandRepository;
+            _repository = commandRepository;
             _settingsService = new SettingsService();
-            _configService = new ConfigService();
-            _httpServerService = new HttpServerService(8080, _configService, _repository,excelService);
+            _configService = configService;
+            _excelService = excelService;
+            _httpServerService = httpServerService;
 
             // Bind events
             _httpServerService.CommandReceived += OnCommandReceived;
@@ -94,12 +101,16 @@ namespace sttmerve_cc.ViewModels
 
             _httpServerService.ServerStarted += (url) =>
             {
-                
+
                 System.Windows.Application.Current.Dispatcher.Invoke(() => ServerUrl = url);
             };
 
             SaveToExcelCommand = new RelayCommand(_ => SaveToExcel());
             LoadExcelCommand = new RelayCommand(_ => LoadExcel());
+            SyncWithExcelCommand = new RelayCommand(_ => SyncWithExcel());
+
+            SaveConfigFromExcelCommand = new RelayCommand(_ => SaveConfigFromExcel());
+
             LoadExcelFromCurrentPathCommand = new RelayCommand(_ => LoadExcelFromCurrentPath());
             StartServerCommand = new RelayCommand(_ => StartServer(), _ => !IsServerRunning);
             StopServerCommand = new RelayCommand(_ => StopServer(), _ => IsServerRunning);
@@ -110,6 +121,12 @@ namespace sttmerve_cc.ViewModels
             {
                 LoadExcelFromFile(settings.ExcelFilePath);
             }
+        }
+        private void AddLog(string message)
+        {
+            string logEntry = $"[{DateTime.Now:HH:mm:ss}] {message}";
+            Logs.Insert(0, logEntry);
+            if (Logs.Count > 100) Logs.RemoveAt(100);
         }
 
         private void LoadExcel()
@@ -144,7 +161,7 @@ namespace sttmerve_cc.ViewModels
             try
             {
                 ExcelFilePath = path;
-                _excelService = new ExcelService(ExcelFilePath, _repository);
+                _excelService!.SetFilePath(ExcelFilePath);
                 // Removed _configService.SyncWithExcel(path) to eliminate Config sheet dependency
 
                 AddLog($"Excel Yükleniyor: {ExcelFilePath}");
@@ -265,6 +282,16 @@ namespace sttmerve_cc.ViewModels
         {
             try
             {
+                if (_excelService == null || SelectedSheet == null)
+                {
+                    AddLog("Hata: Sunucuyu başlatmadan önce Excel dosyası ve sayfası seçilmelidir.");
+                    StatusMessage = "Excel sayfası seçilmedi";
+                    return;
+                }
+
+                _configService.SyncWithExcel(ExcelFilePath, SelectedSheet.Name);
+                _configService.Save();
+                _excelService.SetFilePath(ExcelFilePath);
                 _httpServerService.Start();
                 IsServerRunning = true;
                 StatusMessage = "Sunucu Çalışıyor (Port 8080)";
@@ -290,100 +317,20 @@ namespace sttmerve_cc.ViewModels
         {
             System.Windows.Application.Current.Dispatcher.Invoke(() =>
             {
-                if (_excelService == null || SelectedSheet == null || SheetDataTable == null)
+                if (_excelService == null || SelectedSheet == null)
                 {
-                    AddLog("Hata: Excel dosyası yüklenmedi veya sayfa seçilmedi!");
+                    AddLog("Komut Excel'e kaydedildi; görünüm yenilenemedi çünkü sayfa seçili değil.");
                     return;
                 }
 
                 try
                 {
-                    AddLog($"Gelen Komut Sayısı: {payloads.Count}");
-
-                    // 1. Find a row to use: either an existing empty row or a new one.
-                    DataRow? targetRow = null;
-
-                    // Try to find an existing row that is completely empty (except for ExcelRow)
-                    foreach (DataRow row in SheetDataTable.Rows)
-                    {
-                        bool isEmpty = true;
-                        foreach (DataColumn col in SheetDataTable.Columns)
-                        {
-                            if (col.ColumnName == "ExcelRow") continue;
-
-                            if (row[col] != DBNull.Value && !string.IsNullOrWhiteSpace(row[col]?.ToString()))
-                            {
-                                isEmpty = false;
-                                break;
-                            }
-                        }
-
-                        if (isEmpty)
-                        {
-                            targetRow = row;
-                            break;
-                        }
-                    }
-
-                    if (targetRow == null)
-                    {
-                        // No empty row found, create a new one
-                        int nextRow;
-                        if (SheetDataTable.Rows.Count > 0)
-                        {
-                            nextRow = SheetDataTable.AsEnumerable().Max(r => (int)r["ExcelRow"]) + 1;
-                        }
-                        else
-                        {
-                            nextRow = SelectedSheet.DataStartRow;
-                        }
-
-                        targetRow = SheetDataTable.NewRow();
-                        targetRow["ExcelRow"] = nextRow;
-                        SheetDataTable.Rows.Add(targetRow);
-                        AddLog($"Yeni satır oluşturuldu: Excel Satırı {nextRow}");
-                    }
-                    else
-                    {
-                        AddLog($"Mevcut boş satır kullanılıyor: Excel Satırı {targetRow["ExcelRow"]}");
-                    }
-
-                    // 2. Fill the row with all payloads
-                    foreach (var payload in payloads)
-                    {
-                        // Find the Excel column index
-                        int excelCol = _excelService.GetColumnIndex(SelectedSheet.Name, payload.Category, payload.Type);
-
-                        // Find the corresponding DataColumn in the DataTable
-                        DataColumn? targetCol = null;
-                        foreach (DataColumn col in SheetDataTable.Columns)
-                        {
-                            var colIdxObj = col.ExtendedProperties["ExcelColumnIndex"];
-                            if (colIdxObj is int excelColIdx && excelColIdx == excelCol)
-                            {
-                                targetCol = col;
-                                break;
-                            }
-                        }
-
-                        if (targetCol != null)
-                        {
-                            targetRow[targetCol.ColumnName] = payload.Value;
-                            AddLog($"   -> Sütün {excelCol} ({targetCol.ColumnName}) = {payload.Value}");
-                        }
-                        else
-                        {
-                            AddLog($"   -> Hata: {excelCol} numaralı sütun DataTable'da bulunamadı.");
-                        }
-                    }
-
-                    // 3. Data updated in memory 
-                    AddLog("DataTable güncellendi. Değişiklikleri kaydetmek için 'Excel'e Kaydet' butonuna basın.");
-
+                    LoadSheet();
+                    AddLog($"{payloads.Count} komut Excel'e kaydedildi ve görünüm yenilendi.");
                 }
                 catch (Exception ex)
                 {
-                    AddLog($"Komut hatası: {ex.Message}");
+                    AddLog($"Komut Excel'e kaydedildi ancak görünüm yenilenemedi: {ex.Message}");
                 }
             });
         }
@@ -404,11 +351,47 @@ namespace sttmerve_cc.ViewModels
             });
         }
 
-        private void AddLog(string message)
+        private void SaveConfigFromExcel()
         {
-            string logEntry = $"[{DateTime.Now:HH:mm:ss}] {message}";
-            Logs.Insert(0, logEntry);
-            if (Logs.Count > 100) Logs.RemoveAt(100);
+            try
+            {
+                if (string.IsNullOrWhiteSpace(ExcelFilePath) || SelectedSheet == null)
+                {
+                    AddLog("Hata: Yapılandırmayı oluşturmak için Excel dosyası ve sayfası seçilmelidir.");
+                    return;
+                }
+
+                _configService.SyncWithExcel(ExcelFilePath, SelectedSheet.Name);
+                _configService.Save();
+                AddLog("Yapılandırma Excel sayfasından başarıyla güncellendi ve kaydedildi.");
+            }
+            catch (Exception ex)
+            {
+                AddLog($"Yapılandırma kaydedilirken hata oluştu: {ex.Message}");
+            }
         }
+        private void SyncWithExcel()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(ExcelFilePath) || SelectedSheet == null)
+                {
+                    AddLog("Hata: Excel dosyası veya sayfa seçilmedi.");
+                    return;
+                }
+
+                _configService.SyncWithExcel(ExcelFilePath, SelectedSheet.Name);
+                _configService.Save();
+                AddLog($"Şema başarıyla senkronize edildi: {SelectedSheet.Name} sayfasındaki yapılar kaydedildi.");
+            }
+            catch (Exception ex)
+            {
+                AddLog($"Şema senkronizasyonu sırasında hata: {ex.Message}");
+            }
+        }
+
+
+
     }
+
 }

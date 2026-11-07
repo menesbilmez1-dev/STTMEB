@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using ClosedXML.Excel;
 using sttmerve_cc.Models;
@@ -10,12 +11,19 @@ namespace sttmerve_cc.Services
 {
     public class ExcelService
     {
-        private readonly string _filePath;
+        private string _filePath;
         private readonly CommandRepository _repository;
         public ExcelService(string filePath, CommandRepository repository)
         {
             _filePath = filePath;
             _repository = repository;
+        }
+
+        public void SetFilePath(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+                throw new ArgumentException("Excel file path is required.", nameof(filePath));
+            _filePath = filePath;
         }
 
         public List<string> GetSheetNames()
@@ -35,6 +43,14 @@ namespace sttmerve_cc.Services
         {
             using var workbook = new XLWorkbook(_filePath);
             var worksheet = workbook.Worksheet(sheetName);
+            return FindColumnIndex(worksheet, mainHeader, subHeader);
+        }
+
+        private int FindColumnIndex(
+            IXLWorksheet worksheet,
+            string mainHeader,
+            string subHeader)
+        {
             int lastColumn = 0;
             var lastColRange = worksheet.LastColumnUsed();
             if (lastColRange != null) lastColumn = lastColRange.ColumnNumber();
@@ -44,13 +60,156 @@ namespace sttmerve_cc.Services
                 string actualMainHeader = GetMergedCellValue(worksheet, 1, col);
                 var row2Val = worksheet.Cell(2, col).Value.ToString()?.Trim() ?? string.Empty;
 
-                if (string.Equals(actualMainHeader, mainHeader, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(row2Val, subHeader, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(
+                        actualMainHeader.Trim(),
+                        mainHeader.Trim(),
+                        StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(
+                        row2Val.Trim(),
+                        subHeader.Trim(),
+                        StringComparison.OrdinalIgnoreCase))
                 {
                     return col;
                 }
             }
             throw new Exception($"Şu sütun bulunamadı: {mainHeader} -> {subHeader}");
+        }
+
+        public int WriteCommandBatchToExcel(
+            string sheetName,
+            IReadOnlyList<CommandPayload> payloads,
+            string? batchId = null)
+        {
+            if (string.IsNullOrWhiteSpace(sheetName))
+                throw new ArgumentException("A worksheet must be configured.", nameof(sheetName));
+            if (payloads.Count == 0)
+                throw new ArgumentException("At least one command is required.", nameof(payloads));
+
+            using var workbook = new XLWorkbook(_filePath);
+            var worksheet = workbook.Worksheet(sheetName);
+            var batchLedger = string.IsNullOrWhiteSpace(batchId)
+                ? null
+                : GetBatchLedger(workbook);
+            if (batchLedger != null)
+            {
+                var existingRow = FindBatchRow(batchLedger, batchId!, sheetName);
+                if (existingRow.HasValue) return existingRow.Value;
+            }
+
+            var commands = payloads
+                .Select(payload => new
+                {
+                    Column = FindColumnIndex(
+                        worksheet,
+                        payload.Category.Trim(),
+                        payload.Type.Trim()),
+                    payload.Value
+                })
+                .ToList();
+
+            if (commands.Select(command => command.Column).Distinct().Count() != commands.Count)
+                throw new InvalidOperationException(
+                    "A batch cannot write multiple values to the same Excel column.");
+
+            var lastUsedColumn = worksheet.LastColumnUsed()?.ColumnNumber() ?? 0;
+            var lastUsedRow = worksheet.LastRowUsed()?.RowNumber() ?? 2;
+            var targetRow = 3;
+            for (; targetRow <= lastUsedRow; targetRow++)
+            {
+                var rowIsEmpty = true;
+                for (var column = 1; column <= lastUsedColumn; column++)
+                {
+                    if (!string.IsNullOrWhiteSpace(
+                            worksheet.Cell(targetRow, column).Value.ToString()))
+                    {
+                        rowIsEmpty = false;
+                        break;
+                    }
+                }
+
+                if (rowIsEmpty) break;
+            }
+
+            foreach (var command in commands)
+            {
+                var cell = worksheet.Cell(targetRow, command.Column);
+                if (cell.HasFormula)
+                    throw new InvalidOperationException(
+                        $"Excel row {targetRow} contains a formula in a target column.");
+                cell.Value = command.Value;
+            }
+
+            if (batchLedger != null)
+            {
+                var ledgerRow = (batchLedger.LastRowUsed()?.RowNumber() ?? 1) + 1;
+                batchLedger.Cell(ledgerRow, 1).Value = batchId;
+                batchLedger.Cell(ledgerRow, 2).Value = sheetName;
+                batchLedger.Cell(ledgerRow, 3).Value = targetRow;
+            }
+
+            workbook.Save();
+            return targetRow;
+        }
+
+        private IXLWorksheet GetBatchLedger(IXLWorkbook workbook)
+        {
+            const string ledgerName = "_STT_Batches";
+            var ledger = workbook.Worksheets.FirstOrDefault(sheet =>
+                string.Equals(sheet.Name, ledgerName, StringComparison.Ordinal));
+            if (ledger == null)
+            {
+                ledger = workbook.Worksheets.Add(ledgerName);
+                ledger.Cell(1, 1).Value = "BatchId";
+                ledger.Cell(1, 2).Value = "SheetName";
+                ledger.Cell(1, 3).Value = "ExcelRow";
+            }
+            else if (ledger.Cell(1, 1).GetString() != "BatchId" ||
+                     ledger.Cell(1, 2).GetString() != "SheetName" ||
+                     ledger.Cell(1, 3).GetString() != "ExcelRow")
+            {
+                throw new InvalidOperationException(
+                    $"The reserved worksheet '{ledgerName}' has an unexpected layout.");
+            }
+
+            ledger.Visibility = XLWorksheetVisibility.VeryHidden;
+            return ledger;
+        }
+
+        private int? FindBatchRow(
+            IXLWorksheet ledger,
+            string batchId,
+            string sheetName)
+        {
+            var lastRow = ledger.LastRowUsed()?.RowNumber() ?? 1;
+            for (var row = 2; row <= lastRow; row++)
+            {
+                if (!string.Equals(
+                        ledger.Cell(row, 1).GetString(),
+                        batchId,
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(
+                        ledger.Cell(row, 2).GetString(),
+                        sheetName,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "A command batch ID cannot be reused for a different worksheet.");
+                }
+
+                if (!int.TryParse(ledger.Cell(row, 3).GetString(), out var excelRow))
+                {
+                    throw new InvalidDataException(
+                        $"The stored Excel row for batch '{batchId}' is invalid.");
+                }
+
+                return excelRow;
+            }
+
+            return null;
         }
 
         private string GetMergedCellValue(IXLWorksheet worksheet, int row, int col)

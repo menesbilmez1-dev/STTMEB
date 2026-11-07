@@ -31,6 +31,11 @@ namespace sttmerve_cc.Services
                     CreatedAt DATETIME NOT NULL
                 );";
             connection.Execute(sql);
+            connection.Execute(@"
+                CREATE TABLE IF NOT EXISTS ProcessedBatches (
+                    BatchId TEXT PRIMARY KEY,
+                    CreatedAt DATETIME NOT NULL
+                );");
         }
 
         public void SaveCommand(CommandPayload payload)
@@ -47,6 +52,45 @@ namespace sttmerve_cc.Services
                 payload.Value,
                 CreatedAt = DateTime.Now
             });
+        }
+
+        public bool HasProcessedBatch(string batchId)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            return connection.ExecuteScalar<long>(
+                "SELECT COUNT(*) FROM ProcessedBatches WHERE BatchId = @BatchId;",
+                new { BatchId = batchId }) > 0;
+        }
+
+        public void SaveCommandBatch(string batchId, IReadOnlyList<CommandPayload> payloads)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+
+            connection.Execute(
+                "INSERT INTO ProcessedBatches (BatchId, CreatedAt) VALUES (@BatchId, @CreatedAt);",
+                new { BatchId = batchId, CreatedAt = DateTime.Now },
+                transaction);
+
+            const string sql = @"
+                INSERT INTO Commands (Category, Type, Value, CreatedAt)
+                VALUES (@Category, @Type, @Value, @CreatedAt);";
+            foreach (var payload in payloads)
+            {
+                connection.Execute(
+                    sql,
+                    new
+                    {
+                        payload.Category,
+                        payload.Type,
+                        payload.Value,
+                        CreatedAt = DateTime.Now
+                    },
+                    transaction);
+            }
+
+            transaction.Commit();
         }
 
         public IEnumerable<CommandPayload> GetAll()
